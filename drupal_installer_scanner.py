@@ -33,8 +33,13 @@ installed" and user 1 is untouched. The stuck state is uncommon
 does not take this path — and the lab plants the state after a
 real install, so a remote bug that creates that state was not
 shown, and code execution after the new admin logs in was not
-shown either. What the lab does prove is the shape of the fix:
-11.4.13 refuses to restart a finished install, full stop.
+shown either. What the lab does prove is the shape of the fix
+for CVE-2026-132165: 11.4.13 refuses to restart a finished
+install, full stop. That turned out to be half the story — the
+follow-up advisory SA-CORE-2026-019 (CVE-2026-136716, 25 Nov
+2026) showed sites in unusual or incomplete install states
+stayed open after the first fix, so the floor this scanner
+grades against is the second wave: 10.6.23, 11.3.23, 11.4.14.
 
 The fix itself, per the 11.4.13 release diff, changes four things
 in the installer (`core/includes/install.core.inc`): a failed
@@ -57,11 +62,26 @@ Abraxas repo above) and PoC listings are in circulation; this
 tool is the defensive counterpart.
 
 Fixed releases, per the vendor advisory SA-CORE-2026-017
-(primary source):
+(primary source), as corrected by the follow-up advisory
+SA-CORE-2026-019 (see below):
 
-    Drupal 10.6.x -> 10.6.22 (or later)
-    Drupal 11.3.x -> 11.3.22 (or later)
-    Drupal 11.4.x -> 11.4.13 (or later)
+    Drupal 10.6.x -> 10.6.23 (or later)
+    Drupal 11.3.x -> 11.3.23 (or later)
+    Drupal 11.4.x -> 11.4.14 (or later)
+
+Follow-up, 25 November 2026: SA-CORE-2026-019 (CVE-2026-136716,
+Highly critical 21/25) — sites in unusual or incomplete install
+states stayed open to the same installer takeover after the first
+fix, including production sites, and Drupal says it is being
+exploited in the wild. The first-wave releases (10.6.22, 11.3.22,
+11.4.13) are not enough: a site on one of those is still
+vulnerable to CVE-2026-136716. Update to 10.6.23, 11.3.23 or
+11.4.14, and run update.php after updating — an update hook
+repairs existing sites in the vulnerable state, and the fix is
+not complete until that hook has run. CVE-2026-136716 has no
+CVSS score yet; Drupal rates it 21/25. This scanner grades
+against the second-wave releases, and says so wherever the
+first-wave number would have given a false clean bill.
 
 Drupal 11.2.x and below, 10.5.x and below, and Drupal 8 and 9 are
 end of life and get no fix on those branches — block the
@@ -103,16 +123,19 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 CVE_MAIN = "CVE-2026-132165"
 CVE_COMPANION = "CVE-2026-132166"
+CVE_FOLLOWUP = "CVE-2026-136716"
 CVSS = "9.8"
 CWE = "CWE-94"
 PRODUCT = "Drupal core"
 ADVISORY = "SA-CORE-2026-017"
+ADVISORY_FOLLOWUP = "SA-CORE-2026-019"
 CVE_PUBLISHED = "2026-11-18"
 FIX_RELEASED = "2026-11-18"
+FIX_RELEASED_FOLLOWUP = "2026-11-25"
 EXPLOITED_SINCE = "2026-11-19 19:00 UTC"
 KEV_ADDED = "2026-11-24"
 KEV_DUE = "2026-11-27"
@@ -124,11 +147,23 @@ EXIT_UNKNOWN = 2
 EXIT_USAGE = 3
 
 # Fixed release per supported branch: (major, minor) -> minimum patch.
+# Second-wave floor per SA-CORE-2026-019 (CVE-2026-136716): the
+# first-wave releases (10.6.22, 11.3.22, 11.4.13) still leave a
+# site open to the follow-up flaw, so they grade VULNERABLE.
 # Branches not listed here have no fix on the line: 11.2.x and older
 # 11.x, 10.5.x and older, 8.x, 9.x are end of life; 11.5.x and 12.x
 # are listed as affected in the 16 November PSA with no fixed
 # release yet. Those grade VULNERABLE with the reason named.
 FIXED_PATCH = {
+    (10, 6): 23,
+    (11, 3): 23,
+    (11, 4): 14,
+}
+
+# First-wave floor per SA-CORE-2026-017: a version at or above this
+# but below FIXED_PATCH is on the first fix only, still exposed to
+# CVE-2026-136716 — the detail says so by name.
+FIRST_WAVE_PATCH = {
     (10, 6): 22,
     (11, 3): 22,
     (11, 4): 13,
@@ -203,8 +238,11 @@ def grade(version):
     """Grade a parsed Drupal core version tuple.
 
     Returns (verdict, detail) with verdict VULNERABLE, FIXED or
-    UNKNOWN, following SA-CORE-2026-017 exactly: affected is
-    <10.6.22 || >=11.0.0 <11.3.22 || >=11.4.0 <11.4.13. Branches
+    UNKNOWN, following SA-CORE-2026-019 exactly: affected is
+    <10.6.23 || >=11.0.0 <11.3.23 || >=11.4.0 <11.4.14.
+    SA-CORE-2026-017 fixed the first wave at .22/.22/.13; the
+    follow-up SA-CORE-2026-019 raised the floor, because the
+    first-wave releases stay open to CVE-2026-136716. Branches
     with no fix on the line grade VULNERABLE with the reason named
     (end of life, or affected per the PSA with no fixed release
     yet). A major version above 12 has no advisory coverage and
@@ -216,7 +254,7 @@ def grade(version):
 
     if major >= 13:
         return "UNKNOWN", (
-            "%s is above every branch SA-CORE-2026-017 covers — no "
+            "%s is above every branch SA-CORE-2026-017/-019 cover — no "
             "advisory coverage for Drupal %d, check the advisory "
             "before trusting this grade" % (fmt_version(version), major))
 
@@ -240,9 +278,22 @@ def grade(version):
                 return "FIXED", (
                     "%s is at or above the fixed release %d.%d.%d "
                     "(shipped %s) — the installer refuses to restart "
-                    "a finished install"
+                    "a finished install. Run update.php too: the fix "
+                    "for existing sites is in an update hook "
+                    "(%s), and the install is not repaired until "
+                    "that hook has run"
                     % (fmt_version(version), major, minor, fixed,
-                       FIX_RELEASED))
+                       FIX_RELEASED_FOLLOWUP, ADVISORY_FOLLOWUP))
+            if patch >= FIRST_WAVE_PATCH[(major, minor)]:
+                return "VULNERABLE", (
+                    "%s is on the first-wave fix %d.%d.%d "
+                    "(%s) — still exposed to %s (%s, exploited in "
+                    "the wild): update to %d.%d.%d or later and run "
+                    "update.php, and block %s until you do"
+                    % (fmt_version(version), major, minor,
+                       FIRST_WAVE_PATCH[(major, minor)], ADVISORY,
+                       CVE_FOLLOWUP, ADVISORY_FOLLOWUP,
+                       major, minor, fixed, INSTALLER_PATH))
             return "VULNERABLE", (
                 "%s is below the fixed release %d.%d.%d — update to "
                 "%d.%d.%d or later, and block %s until you do "
@@ -254,15 +305,15 @@ def grade(version):
         return "VULNERABLE", (
             "%s is on an end-of-life branch (11.2.x and below get no "
             "security coverage) with no fix — update to a supported "
-            "branch (11.4.13, 11.3.22 or 10.6.22), and block %s "
+            "branch (11.4.14, 11.3.23 or 10.6.23), and block %s "
             "until you do" % (fmt_version(version), INSTALLER_PATH))
 
     if major == 10:
         if minor >= 7:
             return "UNKNOWN", (
-                "%s is above every 10.x branch SA-CORE-2026-017 covers "
-                "— no advisory coverage for Drupal 10.%d, check the "
-                "advisory before trusting this grade"
+                "%s is above every 10.x branch SA-CORE-2026-017/-019 "
+                "cover — no advisory coverage for Drupal 10.%d, check "
+                "the advisory before trusting this grade"
                 % (fmt_version(version), minor))
         if (major, minor) in FIXED_PATCH:
             fixed = FIXED_PATCH[(major, minor)]
@@ -270,9 +321,22 @@ def grade(version):
                 return "FIXED", (
                     "%s is at or above the fixed release %d.%d.%d "
                     "(shipped %s) — the installer refuses to restart "
-                    "a finished install"
+                    "a finished install. Run update.php too: the fix "
+                    "for existing sites is in an update hook "
+                    "(%s), and the install is not repaired until "
+                    "that hook has run"
                     % (fmt_version(version), major, minor, fixed,
-                       FIX_RELEASED))
+                       FIX_RELEASED_FOLLOWUP, ADVISORY_FOLLOWUP))
+            if patch >= FIRST_WAVE_PATCH[(major, minor)]:
+                return "VULNERABLE", (
+                    "%s is on the first-wave fix %d.%d.%d "
+                    "(%s) — still exposed to %s (%s, exploited in "
+                    "the wild): update to %d.%d.%d or later and run "
+                    "update.php, and block %s until you do"
+                    % (fmt_version(version), major, minor,
+                       FIRST_WAVE_PATCH[(major, minor)], ADVISORY,
+                       CVE_FOLLOWUP, ADVISORY_FOLLOWUP,
+                       major, minor, fixed, INSTALLER_PATH))
             return "VULNERABLE", (
                 "%s is below the fixed release %d.%d.%d — update to "
                 "%d.%d.%d or later, and block %s until you do "
@@ -283,7 +347,7 @@ def grade(version):
         return "VULNERABLE", (
             "%s is on an end-of-life branch (10.5.x and below get no "
             "security coverage) with no fix — update to a supported "
-            "branch (10.6.22, 11.3.22 or 11.4.13), and block %s "
+            "branch (10.6.23, 11.3.23 or 11.4.14), and block %s "
             "until you do" % (fmt_version(version), INSTALLER_PATH))
 
     # Drupal 9, 8, 7 and older: end of life, no fix on any branch.
@@ -328,7 +392,7 @@ def fetch(url, timeout=10):
     front page is a different answer from the installer form.
     """
     headers = {
-        "User-Agent": "drupal-installer-scanner/1.0 (detection-only triage)"
+        "User-Agent": "drupal-installer-scanner/1.1 (detection-only triage)"
     }
     request = urllib.request.Request(url, headers=headers)
     opener = urllib.request.build_opener(
@@ -748,10 +812,12 @@ def print_result(result, as_json=False):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="Detection-only triage for Drupal core %s (%s, "
-                    "CVSS %s). Grades the core version against the %s "
-                    "fix. Never sends payloads, never POSTs."
-                    % (CVE_MAIN, ADVISORY, CVSS, FIX_RELEASED))
+        description="Detection-only triage for Drupal core %s and %s "
+                    "(%s / %s, CVSS %s). Grades the core version "
+                    "against the %s fix. Never sends payloads, never "
+                    "POSTs."
+                    % (CVE_MAIN, CVE_FOLLOWUP, ADVISORY,
+                       ADVISORY_FOLLOWUP, CVSS, FIX_RELEASED_FOLLOWUP))
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--version", metavar="VERSION",
                        help="grade a version string, e.g. 11.4.12")
@@ -780,13 +846,20 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     if args.list:
-        print("%s — %s (%s) — CVSS %s" % (PRODUCT, CVE_MAIN, ADVISORY, CVSS))
-        print("affected: <10.6.22, 11.0.0–11.3.21, 11.4.0–11.4.12; "
+        print("%s — %s + %s (%s / %s) — CVSS %s"
+              % (PRODUCT, CVE_MAIN, CVE_FOLLOWUP, ADVISORY,
+                 ADVISORY_FOLLOWUP, CVSS))
+        print("affected: <10.6.23, 11.0.0–11.3.22, 11.4.0–11.4.13; "
               "11.2.x and below, 10.5.x and below, 8, 9 end of life; "
               "11.5 beta and 12.0 affected, no fix on line yet")
-        print("fixed:    10.6.22, 11.3.22, 11.4.13 (released %s; CVE "
+        print("fixed:    10.6.23, 11.3.23, 11.4.14 (released %s; CVE "
               "published %s; exploited since %s; CISA KEV due %s)"
-              % (FIX_RELEASED, CVE_PUBLISHED, EXPLOITED_SINCE, KEV_DUE))
+              % (FIX_RELEASED_FOLLOWUP, CVE_PUBLISHED, EXPLOITED_SINCE,
+                 KEV_DUE))
+        print("follow-up: %s (%s, 25 Nov 2026, exploited in the wild) "
+              "— the first-wave fix (10.6.22, 11.3.22, 11.4.13) is "
+              "not enough; run update.php after updating"
+              % (CVE_FOLLOWUP, ADVISORY_FOLLOWUP))
         print("needs:    the installer reachable at %s on a finished "
               "site whose install_task is not \"done\"; some exploit "
               "paths need settings.php writable by the web server"

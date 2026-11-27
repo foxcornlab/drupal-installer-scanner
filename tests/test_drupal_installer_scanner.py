@@ -26,16 +26,16 @@ import drupal_installer_scanner as scanner
 GRADE_CASES = [
     # (version string, expected verdict)
     ("10.6.21", "VULNERABLE"),  # one patch behind the 10.6 fix
-    ("10.6.22", "FIXED"),       # first fixed 10.6 release
+    ("10.6.22", "VULNERABLE"),  # first-wave fix only, still open to CVE-2026-136716
     ("10.6.23", "FIXED"),
     ("10.5.0", "VULNERABLE"),   # end of life, no fix
     ("10.0.0", "VULNERABLE"),
     ("11.2.0", "VULNERABLE"),   # end of life, no fix
     ("11.3.21", "VULNERABLE"),  # one patch behind the 11.3 fix
-    ("11.3.22", "FIXED"),       # first fixed 11.3 release
+    ("11.3.22", "VULNERABLE"),  # first-wave fix only, still open to CVE-2026-136716
     ("11.3.23", "FIXED"),
     ("11.4.12", "VULNERABLE"),  # the lab-proven vulnerable release
-    ("11.4.13", "FIXED"),       # first fixed 11.4 release
+    ("11.4.13", "VULNERABLE"),  # first-wave fix only, still open to CVE-2026-136716
     ("11.4.14", "FIXED"),
     ("11.5.0", "VULNERABLE"),   # PSA: affected, no fix on line yet
     ("11.5.0-beta1", "VULNERABLE"),
@@ -68,8 +68,23 @@ def test_parse_version_tolerates_suffixes():
 
 def test_11_4_12_detail_names_fix_and_kev():
     _verdict, detail = scanner.grade(scanner.parse_version("11.4.12"))
-    assert "11.4.13" in detail
+    assert "11.4.14" in detail
     assert "2026-11-27" in detail  # CISA KEV due date
+
+
+def test_first_wave_fix_still_vulnerable_to_followup():
+    # SA-CORE-2026-019: the first-wave releases are not enough.
+    for raw in ("10.6.22", "11.3.22", "11.4.13"):
+        verdict, detail = scanner.grade(scanner.parse_version(raw))
+        assert verdict == "VULNERABLE", raw
+        assert "CVE-2026-136716" in detail, raw
+        assert "update.php" in detail, raw
+
+
+def test_fixed_detail_names_update_php():
+    _verdict, detail = scanner.grade(scanner.parse_version("11.4.14"))
+    assert "update.php" in detail
+    assert "SA-CORE-2026-019" in detail
 
 
 def test_eol_detail_names_no_fix():
@@ -153,7 +168,7 @@ def test_probe_vulnerable_version_refusing_installer():
     finally:
         server.shutdown()
     assert verdict == "VULNERABLE"
-    assert "11.4.13" in detail
+    assert "11.4.14" in detail
     assert any("already installed" in n for n in notes)
 
 
@@ -177,7 +192,7 @@ def test_probe_resumable_installer_is_exploitable_condition():
 def test_probe_fixed_version():
     routes = {
         "/CHANGELOG.txt": (200, {},
-                           "Drupal 11.4.13, 2026-11-18\n"),
+                           "Drupal 11.4.14, 2026-11-25\n"),
         "/": (200, {}, "<html>Drupal</html>"),
         "/core/install.php": (200, {},
                               "<html>Drupal already installed</html>"),
@@ -188,6 +203,25 @@ def test_probe_fixed_version():
     finally:
         server.shutdown()
     assert verdict == "FIXED"
+    assert "update.php" in detail
+
+
+def test_probe_first_wave_version_is_vulnerable():
+    # 11.4.13 was the v1.0.0 "fixed" fixture; SA-CORE-2026-019 says no.
+    routes = {
+        "/CHANGELOG.txt": (200, {},
+                           "Drupal 11.4.13, 2026-11-18\n"),
+        "/": (200, {}, "<html>Drupal</html>"),
+        "/core/install.php": (200, {},
+                              "<html>Drupal already installed</html>"),
+    }
+    server, base = serve(routes)
+    try:
+        verdict, detail, _notes = scanner.probe_url(base)
+    finally:
+        server.shutdown()
+    assert verdict == "VULNERABLE"
+    assert "CVE-2026-136716" in detail
 
 
 def test_probe_resumable_but_version_unknown():
@@ -253,9 +287,9 @@ def test_local_dir_drupal_php(tmp_path):
     core_lib = tmp_path / "core" / "lib"
     core_lib.mkdir(parents=True)
     (core_lib / "Drupal.php").write_text(
-        "<?php\nclass Drupal {\n  const VERSION = '11.3.22';\n}\n")
+        "<?php\nclass Drupal {\n  const VERSION = '11.3.23';\n}\n")
     version, _notes = scanner.read_local_dir(str(tmp_path))
-    assert version == (11, 3, 22)
+    assert version == (11, 3, 23)
     assert scanner.grade(version)[0] == "FIXED"
 
 
@@ -308,12 +342,14 @@ def test_ioc_dir_flags_php_under_files(tmp_path):
 def test_list_flag(capsys):
     assert scanner.main(["--list"]) == 0
     out = capsys.readouterr().out
-    assert "10.6.22" in out and "11.3.22" in out and "11.4.13" in out
+    assert "10.6.23" in out and "11.3.23" in out and "11.4.14" in out
+    assert "CVE-2026-136716" in out
 
 
 def test_version_flag_exit_codes(capsys):
     assert scanner.main(["--version", "11.4.12"]) == 1
-    assert scanner.main(["--version", "11.4.13"]) == 0
+    assert scanner.main(["--version", "11.4.13"]) == 1  # first-wave fix only
+    assert scanner.main(["--version", "11.4.14"]) == 0
     assert scanner.main(["--version", "banana"]) == 2
     with pytest.raises(SystemExit):
         scanner.main(["--version"])  # argparse error, missing value
@@ -321,7 +357,7 @@ def test_version_flag_exit_codes(capsys):
 
 def test_inventory_json(tmp_path, capsys):
     entries = [{"host": "site-a", "version": "11.4.12"},
-               {"host": "site-b", "version": "11.4.13"}]
+               {"host": "site-b", "version": "11.4.14"}]
     inv = tmp_path / "fleet.json"
     inv.write_text(json.dumps(entries))
     assert scanner.main(["--inventory-json", str(inv)]) == 1
